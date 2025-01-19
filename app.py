@@ -1,122 +1,112 @@
-from flask import Flask, request, jsonify
+import streamlit as st
 import yfinance as yf
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
 import numpy as np
+import joblib
 from datetime import datetime, timedelta
+import matplotlib.pyplot as plt
 
-app = Flask(_name)  # Corrected to __name
+# Load pre-trained models and scaler
+@st.cache_resource
+def load_models():
+    scaler = joblib.load("scaler.pkl")
+    model = joblib.load("buy_sell_model.pkl")
+    label_encoder = joblib.load("label_encoder.pkl")
+    return scaler, model, label_encoder
 
-# Endpoint 1: NYSE U.S. 100 Index Price Data
-@app.route('/get_nyse_data', methods=['GET'])
-def get_nyse_data():
+scaler, model, label_encoder = load_models()
+
+# App Title
+st.title("Stock Analysis and Signal Generation")
+
+# Section 1: Fetch NYSE Data
+st.header("1. NYSE U.S. 100 Index Price Data")
+
+# Input form for NYSE data
+with st.form("nyse_form"):
+    start_date_nyse = st.date_input("Start Date", datetime.now() - timedelta(days=365))
+    end_date_nyse = st.date_input("End Date", datetime.now())
+    submitted_nyse = st.form_submit_button("Fetch NYSE Data")
+
+if submitted_nyse:
     try:
-        # Get parameters from the request
-        start_date = request.args.get('start_date')
-        end_date = request.args.get('end_date')
-
-        # Convert to datetime objects
-        start_date = datetime.strptime(start_date, "%Y-%m-%d")
-        end_date = datetime.strptime(end_date, "%Y-%m-%d")
-        
-        # Fetch NYSE Composite Index data
         ticker = "^NYA"
-        data = yf.download(ticker, start=start_date, end=end_date)
-        data_close = data['Close']
-        data_close.index = data_close.index.astype(str)
-
-        # Return the data as a JSON response
-        return jsonify(data_close.to_dict())
+        data = yf.download(ticker, start=start_date_nyse, end=end_date_nyse)
+        st.write("### NYSE Close Prices", data[['Close']])
+        st.line_chart(data['Close'])
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        st.error(f"Error fetching NYSE data: {e}")
 
-# Endpoint 2: Cumulative sum of price movement for the given list of stocks
-@app.route('/get_cumulative_movement', methods=['GET'])
-def get_cumulative_movement():
+# Section 2: Cumulative Price Movement
+st.header("2. Cumulative Price Movement for Stocks")
+
+# Input form for cumulative movement
+with st.form("cumulative_form"):
+    stocks_input = st.text_input("Enter Stock Tickers (comma-separated)", "AAPL,GOOG")
+    start_date_cum = st.date_input("Start Date (Cumulative)", datetime.now() - timedelta(days=365))
+    end_date_cum = st.date_input("End Date (Cumulative)", datetime.now())
+    submitted_cum = st.form_submit_button("Calculate Cumulative Movement")
+
+if submitted_cum:
     try:
-        # Get parameters from the request
-        stocks = request.args.get('stocks').split(',')
-        start_date = request.args.get('start_date')
-        end_date = request.args.get('end_date')
-
-        # Convert to datetime objects
-        start_date = datetime.strptime(start_date, "%Y-%m-%d")
-        end_date = datetime.strptime(end_date, "%Y-%m-%d")
-        
+        stock_list = stocks_input.split(',')
         cumulative_price = None
-        
-        for stock in stocks:
-            # Fetch stock data
-            data = yf.download(stock, start=start_date, end=end_date)
-            
-            # Calculate cumulative sum of closing prices
+
+        for stock in stock_list:
+            data = yf.download(stock, start=start_date_cum, end=end_date_cum)
             if cumulative_price is None:
-                cumulative_price = data['Close'].to_numpy()
+                cumulative_price = data['Close']
             else:
-                cumulative_price += data['Close'].to_numpy()
-        
-        # Create DataFrame for the result
-        cumulative_price_df = pd.DataFrame(cumulative_price, index=data.index, columns=["Cumulative Close"])
-        cumulative_price_df.index = cumulative_price_df.index.astype(str)
+                cumulative_price += data['Close']
 
-        return jsonify(cumulative_price_df.to_dict())
+        cumulative_df = pd.DataFrame(cumulative_price, columns=["Cumulative Close"])
+        st.write("### Cumulative Price Movement", cumulative_df)
+        st.line_chart(cumulative_df)
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        st.error(f"Error calculating cumulative price movement: {e}")
 
-# Endpoint 3: Random Forest Classifier for Buy/Sell/Hold Labels
-@app.route('/generate_signals', methods=['GET'])
-def generate_signals():
+# Section 3: Generate Signals
+st.header("3. Generate Buy/Sell/Hold Signals")
+
+# Input form for signal generation
+with st.form("signals_form"):
+    stocks_signal = st.text_input("Enter Stock Tickers for Signals (comma-separated)", "AAPL,GOOG")
+    start_date_signal = st.date_input("Start Date (Signals)", datetime.now() - timedelta(days=365))
+    end_date_signal = st.date_input("End Date (Signals)", datetime.now())
+    submitted_signal = st.form_submit_button("Generate Signals")
+
+if submitted_signal:
     try:
-        # Get parameters from the request
-        stocks = request.args.get('stocks').split(',')
-        start_date = request.args.get('start_date')
-        end_date = request.args.get('end_date')
-
-        # Convert to datetime objects
-        start_date = datetime.strptime(start_date, "%Y-%m-%d")
-        end_date = datetime.strptime(end_date, "%Y-%m-%d")
-        
+        stock_list = stocks_signal.split(',')
         signals = {}
-        
-        for stock in stocks:
-            # Fetch stock data
-            data = yf.download(stock, start=start_date, end=end_date)
-            
-            # Create features for the Random Forest
+
+        for stock in stock_list:
+            data = yf.download(stock, start=start_date_signal, end=end_date_signal)
             data['Returns'] = data['Adj Close'].pct_change()
             data['Moving Average'] = data['Adj Close'].rolling(window=20).mean()
             data['Volatility'] = data['Returns'].rolling(window=20).std()
-            
-            # Drop NaN values
             data = data.dropna()
 
-            # Prepare training data
-            X = data[['Returns', 'Moving Average', 'Volatility']]
-            y = (data['Returns'] > 0).astype(int)
-            
-            # Train the Random Forest Classifier
-            clf = RandomForestClassifier(n_estimators=100, random_state=42)
-            clf.fit(X, y)
+            # Scale the features
+            features = ['Returns', 'Moving Average', 'Volatility']
+            X = data[features]
+            X_scaled = scaler.transform(X)
 
-            # Generate signals for every 3 months
-            signals[stock] = []
-            current_date = start_date
-            while current_date < end_date:
-                period_end = current_date + timedelta(days=90)
-                period_data = data[(data.index >= current_date.strftime('%Y-%m-%d')) & 
-                                   (data.index < period_end.strftime('%Y-%m-%d'))]
-                
-                if not period_data.empty:
-                    X_period = period_data[['Returns', 'Moving Average', 'Volatility']]
-                    predicted = clf.predict(X_period)
-                    signal = 'Buy' if predicted.mean() > 0.7 else ('Hold' if predicted.mean() > 0.4 else 'Sell')
-                    signals[stock].append({'date': current_date.strftime('%Y-%m-%d'), 'signal': signal})
-                
-                current_date = period_end
+            # Predict signals
+            predicted = model.predict(X_scaled)
+            predicted_labels = label_encoder.inverse_transform(predicted)
 
-        return jsonify(signals)
+            stock_signals = [
+                {'date': idx.strftime('%Y-%m-%d'), 'signal': label}
+                for idx, label in zip(data.index, predicted_labels)
+            ]
+
+            signals[stock] = stock_signals
+
+        # Display signals
+        for stock, stock_signals in signals.items():
+            st.write(f"### Signals for {stock}")
+            st.table(pd.DataFrame(stock_signals))
+
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
-
-if _name_ == '_main_':
-    app.run(debug=True)
+        st.error(f"Error generating signals: {e}")
